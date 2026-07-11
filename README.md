@@ -157,7 +157,7 @@ You should already be comfortable with:
 - MLflow: experiment logging, model registration (PA1–PA3)
 - Databricks Model Serving and Unity Catalog (wk5 notebook 15)
 
-> **Everything runs on Databricks.** Unlike PA2 (which used a local pgvector container for Parts 2–3), PA4 uses **Databricks Vector Search** end-to-end — the same managed index works locally *and* inside the deployed serving container, so there is no local-vs-cloud retrieval gap to bridge.
+> **Everything runs on Databricks.** PA4 uses **Databricks Vector Search** end-to-end — the same managed index works locally *and* inside the deployed serving container, so there is no local-vs-cloud retrieval gap to bridge.
 
 Course repository: https://github.com/alikhawaja/cs4603
 
@@ -260,7 +260,7 @@ VECTOR_SEARCH_ENDPOINT=<your-name>-vs-endpoint
 VECTOR_SEARCH_INDEX=main.default.<your-name>_analyst_index
 ```
 
-> **Auth note — why a token, not a CLI profile.** PA3 authenticated through a `DATABRICKS_CONFIG_PROFILE`. PA4 switches to an explicit **Personal Access Token** (`DATABRICKS_TOKEN`) because (a) the deployed serving container has no interactive CLI profile — it reads the token from a secret scope at startup, and (b) the Bonus A CI/CD pipeline runs headless in GitHub Actions. Same credential, delivered as an env var so it works identically on your laptop, in the endpoint, and in CI. Never hardcode it.
+
 
 ### Task 0.2: Verify the MCP Server
 
@@ -424,13 +424,19 @@ Connect the provided MCP server as a tool node in your graph:
 - Bind the MCP tools to a tool node that the supervisor can route to
 - Parse tool results and append them to `step_results`
 
-> **Caveat — stdio MCP + `asyncio` in the serving container.** `langchain-mcp-adapters`
-> tools are async, so you will wrap calls in `asyncio.run(...)`. That works in MLflow's
-> synchronous serving path, but `asyncio.run()` raises *"cannot be called from a running
-> event loop"* if invoked while a loop is already running, and each stdio tool call may
-> relaunch the `mcp_server.py` subprocess. This is the most fragile part of the deployment:
-> load the tools once at graph-build time, keep tool invocation synchronous, and test the
-> deployed endpoint end-to-end (Task 2.4) rather than assuming local success transfers.
+> **Caveat — stdio MCP is bundled inside the serving container.** Here the MCP server
+> ships inside the model artifact and runs as a stdio subprocess, so the tool server and
+> the model are coupled: they deploy and scale together. To keep this reliable, load the
+> tools once at graph-build time and keep tool invocation synchronous. Code that works on
+> your laptop can still fail inside the serving container, so don't assume a passing local
+> run means the deployment works — verify it by calling the deployed endpoint directly in
+> Task 2.4.
+>
+> **Real-world alternative (Bonus C).** In the bonus section you'll get the chance to do a
+> production-style implementation: deploy `mcp_server.py` as its own standalone HTTP service
+> and have the agent connect to it remotely. Decoupling the tool server from the model lets
+> you redeploy, scale, and monitor each independently, share one tool service across many
+> agents, and avoid bundling tool code into every model artifact.
 
 ---
 
@@ -457,9 +463,6 @@ The synthesizer receives all step results and produces a coherent final answer:
 
 **Reference:** `wk5_langgraph/12.subgraphs.ipynb` for composition patterns
 
-> **Points note.** Tasks 1.1–1.6 already total the full 40 points for Part 1. Wiring the
-> graph here is **required** (nothing runs without it), but its 5 points are *make-up*
-> credit: they can offset marks lost in 1.1–1.6 and cannot push Part 1 above its 40-point cap.
 
 #### IMPLEMENTATION
 
