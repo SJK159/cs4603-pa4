@@ -1,11 +1,7 @@
 # Bonus A — CI/CD pipeline (.github/workflows/deploy.yml)
 #
-# TODO: Implement a lint -> test -> deploy workflow.
-#   - lint:   ruff check on agent/ and client/
-#   - test:   a smoke test that imports and compiles the graph
-#   - deploy: ONLY on push to main; log the model, register a new UC version,
-#             and update the serving endpoint. Use GitHub Secrets for
-#             DATABRICKS_HOST / DATABRICKS_TOKEN. Add a workflow_dispatch trigger.
+# lint -> test -> deploy. Deploy only runs on push to main, after lint+test
+# pass. See GITHUB_PIPELINE.md for the concept walkthrough this file follows.
 
 name: deploy
 
@@ -20,7 +16,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # TODO: install uv, sync deps, run `ruff check` and the smoke test
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Lint (ruff)
+        run: uv run ruff check agent/ client/
+
+      - name: Test (offline smoke test)
+        run: uv run pytest -q
 
   deploy:
     needs: lint-and-test
@@ -28,4 +37,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # TODO: install deps and run `python deployment/deploy.py` with secrets
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Log, register, and deploy
+        env:
+          # Secrets — configure under Settings -> Secrets and variables ->
+          # Actions -> New repository secret. Never hardcode these.
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+          # Not secrets (model/index names, not credentials) — configure
+          # under Settings -> Secrets and variables -> Actions -> Variables.
+          # Falls back to the same defaults as .env.example / deploy.py.
+          DATABRICKS_MODEL: ${{ vars.DATABRICKS_MODEL || 'databricks-meta-llama-3-3-70b-instruct' }}
+          EMBEDDINGS_ENDPOINT: ${{ vars.EMBEDDINGS_ENDPOINT || 'databricks-gte-large-en' }}
+          UC_CATALOG: ${{ vars.UC_CATALOG || 'main' }}
+          UC_SCHEMA: ${{ vars.UC_SCHEMA || 'default' }}
+          VECTOR_SEARCH_ENDPOINT: ${{ vars.VECTOR_SEARCH_ENDPOINT }}
+          VECTOR_SEARCH_INDEX: ${{ vars.VECTOR_SEARCH_INDEX }}
+          SERVING_ENDPOINT_NAME: ${{ vars.SERVING_ENDPOINT_NAME }}
+          SECRET_SCOPE: ${{ vars.SECRET_SCOPE || 'cs4603-deploy' }}
+        run: uv run python deployment/deploy.py
+        # deploy.py itself prints the registered model version
+        # ("Registered model: ..., version ...") and polls + prints the
+        # endpoint's state and URL ("Endpoint state: ...", "Endpoint URL:
+        # ...") once READY — visible in this step's logs, satisfying the
+        # "print the deployed model version and endpoint status" requirement.

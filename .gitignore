@@ -21,3 +21,12 @@ env/
 Thumbs.db
 .vscode/
 .idea/
+
+# Local MLflow tracking (not a deliverable — see submission notes)
+mlflow.db
+mlruns/
+
+# Local dev tooling / reference material — not part of the submission
+.omc/
+cs4603-main-2/
+PA4_Conceptual_Guide.pdf
