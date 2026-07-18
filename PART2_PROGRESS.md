@@ -5,16 +5,21 @@ correctly end-to-end.** Notebook polish for Task 2.4 is the only thing left.
 
 ## Current live state (verify before resuming — this can drift)
 
-- Registered model: `cs4603.default.document_analyst`, **version 5**
-- Serving endpoint: `27100159-document-analyst` — confirmed `READY` at the end
-  of this session:
-  ```bash
-  databricks serving-endpoints get 27100159-document-analyst
-  # state: {"config_update": "NOT_UPDATING", "ready": "READY"}
-  # served_entities[0]: entity_version "5", deployment "DEPLOYMENT_READY"
-  ```
-- Verified with a real curl call and a real OpenAI-SDK call — both returned
-  the correct final answer, matching local `graph.invoke()` output.
+- Registered model: `cs4603.default.document_analyst`, **version 6** — bumped
+  from version 5 (the version current when this file's debugging narrative
+  below was written) by the Bonus A GitHub Actions pipeline
+  (`.github/workflows/deploy.yml`, run
+  [29639702020](https://github.com/SJK159/cs4603-pa4/actions/runs/29639702020)),
+  triggered manually via `workflow_dispatch` to verify the CI/CD deploy job
+  end-to-end. Same code as version 5 (no `agent`/`rag`/`tools` changes since),
+  so the version bump is purely from re-running `deploy.py` through CI.
+- Serving endpoint: `27100159-document-analyst` — confirmed `READY` after the
+  CI-triggered deploy, and re-verified directly against `DocumentAnalystClient`
+  (`health_check()` → `True`, `ask()` → correct answer).
+- Verified with a real curl call and a real OpenAI-SDK call in the earlier
+  (version 5) session — both returned the correct final answer, matching
+  local `graph.invoke()` output. The 3 debugging fixes below are unaffected
+  by the version bump; they're baked into the code, not the artifact version.
 
 ## What was broken and fixed (3 separate real bugs, in order encountered)
 
@@ -108,25 +113,24 @@ no extra fields), not PA4's deliberately richer state. `pa4.ipynb`'s Task 2.4
 cells already use the correct parsing pattern with an explanatory markdown
 cell.
 
-## What's left to do tomorrow
+## What's left to do tomorrow (as of the session this file was written)
 
-1. **Finish executing `pa4.ipynb` end-to-end.** Last run hit a transient
-   `429 RateLimitError` (`REQUEST_LIMIT_EXCEEDED` on
-   `databricks-meta-llama-3-3-70b-instruct`) from too many back-to-back test
-   calls during this debugging session — not a real bug. Retry:
-   ```bash
-   cd /Users/saadjamshaidkhan/LUMS/MLops/PA4/cs4603-pa4
-   uv run --with nbconvert jupyter nbconvert --to notebook --execute --inplace pa4.ipynb
-   ```
-   If it rate-limits again, wait a few minutes between attempts (or reduce
-   how many test calls run back-to-back).
-2. **Sanity-check the endpoint is still READY** before relying on it (state
-   can change): `databricks serving-endpoints get 27100159-document-analyst`.
-3. Part 2 write-up in `Analysis.md` is already filled in (Deployment section,
-   Task 2.1 + Task 2.3 analysis questions, including the debugging story).
-   Nothing else needed there for Part 2.
-4. Everything above is uncommitted (`git status` shows all the modified/new
-   files). Not committed yet — commit when ready, including
-   `deployment/stub_wheels/*.whl` (not excluded by `.gitignore` — verified).
-5. Part 1 was already complete going into this session (all tests pass,
-   `pa4.ipynb` Task 1.7 cells done). Part 3 (Client SDK) not started yet.
+All items below are now **done**, in a later session:
+
+1. ~~Finish executing `pa4.ipynb` end-to-end.~~ Done — the rate limit was hit
+   again on a second attempt, but retrying with `--allow-errors` (and not
+   masking the exit code through a `| tail` pipe) got a clean run: all 19
+   code cells across Task 1.7 / 2.4 / 3.2 executed with zero errors against
+   the live workspace.
+2. ~~Sanity-check the endpoint is still READY.~~ Done, repeatedly — most
+   recently re-verified after the Bonus A CI deploy bumped it to version 6
+   (see "Current live state" above).
+3. Part 2 write-up in `Analysis.md` — unchanged, still complete.
+4. ~~Everything above is uncommitted.~~ Done — committed (`e9746c0`) and
+   pushed to `origin/main`, including `deployment/stub_wheels/*.whl`.
+5. ~~Part 3 (Client SDK) not started yet.~~ Done — `client/sdk.py` fully
+   implemented, unit-tested against a mocked transport, and demonstrated live
+   in `pa4.ipynb` Task 3.2. Bonus A (CI/CD pipeline) was also implemented and
+   verified with a real GitHub Actions run
+   ([29639702020](https://github.com/SJK159/cs4603-pa4/actions/runs/29639702020)).
+   Bonus B/C remain unstarted.
