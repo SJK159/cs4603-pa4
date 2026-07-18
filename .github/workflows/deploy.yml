@@ -1,7 +1,7 @@
 # Bonus A — CI/CD pipeline (.github/workflows/deploy.yml)
 #
 # lint -> test -> deploy. Deploy only runs on push to main, after lint+test
-# pass. See GITHUB_PIPELINE.md for the concept walkthrough this file follows.
+# pass. See ANSWERS.md's "CI/CD Pipeline (Bonus A)" section for the writeup.
 
 name: deploy
 

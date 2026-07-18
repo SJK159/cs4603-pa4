@@ -1,6 +1,6 @@
 # CS4603 PA4 — Document Analyst
 
-> This `README.md` is a **graded deliverable**:
+> This `ANSWERS.md` is a **graded deliverable**:
 >
 > - Document how to set up, run, and deploy your Document Analyst so a TA can reproduce your results.
 > - **Answer every ANALYSIS QUESTION** from the assignment in the sections below.
@@ -360,7 +360,7 @@ inspectable, which is what makes the Task 1.7 step-by-step trace possible.
 `messages` as an `add_messages`-reduced channel; every other field
 (`plan`, `current_step_index`, `step_results`, `next_agent`, `final_answer`)
 is plain scratch space the nodes overwrite directly. This follows the
-"messages in, messages out" rule from `DEPLOYMENT_GUIDE.md` §5: because
+"messages in, messages out" rule: because
 Databricks Model Serving reads the deployed endpoint's response off
 `messages[-1]`, `synthesizer` writes the answer to *both* `final_answer` (for
 local/notebook use) and appends an `AIMessage` to `messages` (for the
@@ -374,8 +374,8 @@ since the same managed index is reachable with just `DATABRICKS_HOST`/
 `DATABRICKS_TOKEN`, `rag_agent.py`'s retriever code is *identical* between
 `pa4.ipynb` (Task 1.7) and the serving container (Task 2.1) — there's no
 separate "local embedding path" to keep in sync or forget to port over at
-deploy time, which is exactly the class of bug `DEPLOYMENT_GUIDE.md` calls
-out repeatedly (`ModuleNotFoundError`, missing env vars) as the common
+deploy time, which is exactly the class of bug (`ModuleNotFoundError`,
+missing env vars) that is the common
 deployment failure mode this design sidesteps.
 
 **MCP tools loaded once, invoked synchronously.** `load_mcp_tools()` is
@@ -692,7 +692,7 @@ needing to know which one it's running in.
 1. **Gained:** the tool server can now be redeployed, restarted, and scaled independently
    of the model — I proved this directly by stopping and restarting
    `27100159-mcp-tools` without touching the serving endpoint at all. It also removes the
-   most fragile part of the container deployment (per `DEPLOYMENT_GUIDE.md`'s own framing):
+   most fragile part of the container deployment:
    the model container no longer needs to spawn and manage a stdio subprocess at
    graph-build time, and the `_real_stderr_for_first_mcp_import()` workaround becomes
    unnecessary for the MCP half of the problem (it's still needed for
@@ -721,7 +721,7 @@ needing to know which one it's running in.
    the underlying service principal any permissions beyond that one app.
 3. Bundling (Part 1) wins when the tool set is small, stable, and used by exactly one
    agent — no network hop, no separate deployment to manage, no second auth surface to
-   secure, and (per `DEPLOYMENT_GUIDE.md`) it's what a single-container serving deploy
+   secure, and it's what a single-container serving deploy
    naturally supports without extra infrastructure. A standalone service (Bonus C) is
    worth the extra moving parts once any of that stops being true: multiple agents sharing
    one tool server, the tools needing to scale or redeploy on a different cadence than the
