@@ -272,6 +272,73 @@ endpoint is called with `temperature=0`, but a freshly-serving container's very 
 inference isn't guaranteed to be bit-identical to steady-state calls) rather than a defect
 in the wrapper.
 
+## Standalone MCP Server on Databricks Apps (Bonus C)
+
+`deployment/mcp_app/app.py` reuses the GIVEN `tools/mcp_server.py` tool definitions
+unchanged, serving them over `streamable-http` instead of stdio so they can run as a
+long-lived Databricks App. `agent/graph.py::load_mcp_tools()` now branches on
+`MCP_SERVER_URL`: unset, it spawns the Part 1 stdio subprocess exactly as before;
+set, it connects to the remote App over HTTP instead.
+
+**Four real deployment gotchas, found only by actually deploying — none visible from
+reading the code:**
+
+1. **`app.yaml` is silently ignored — the real filename is `app.yml`.** The first deploy
+   failed with `No command to run and no Python file found`, even though `app.yaml` (with
+   a `command:` field) was present. Databricks Apps only recognizes the three-letter
+   extension. Fixed by renaming the file in the repo itself (`deployment/mcp_app/app.yml`),
+   not just the deployed copy — the assignment's own snippet says `app.yaml`, but the real
+   runtime disagrees, so I went with what's actually true.
+2. **`app.yml`/`app.py` must sit at the *root* of the deployed source path, not nested.**
+   Even after fixing the filename, the same "no command" error persisted with
+   `deployment/mcp_app/app.yml` nested under the uploaded workspace path. Deploying from a
+   flattened layout (`app.yml`/`app.py`/`requirements.txt`/`tools/` all siblings at the
+   source root) fixed it. `app.py`'s `sys.path` fix-up (needed for `from tools.mcp_server
+   import mcp` — the App's clean environment has no editable install of this project, unlike
+   local `uv run`) now searches upward for whichever directory actually contains `tools/`
+   instead of assuming one fixed nesting depth, so the same file works in both the local
+   repo's nested layout and the flattened deployed one — verified in an isolated venv
+   mimicking each.
+3. **Databricks Apps require an OAuth token, not a personal access token.** Calling the
+   deployed App with `DATABRICKS_TOKEN` (the PAT everything else in this project
+   authenticates with) returned `401 Unauthorized` — for the *same* user, holding
+   `CAN_MANAGE` on the app (ruled out as a permissions issue by checking
+   `get-permissions`). A Databricks CLI U2M OAuth token worked immediately. Since the
+   model-serving container only ever has a PAT, `agent/graph.py::_mint_mcp_oauth_token()`
+   performs a proper OAuth client-credentials exchange (`POST {host}/oidc/v1/token`) using
+   a dedicated service principal (`cs4603-mcp-caller`, granted `CAN_USE` on the app)
+   whose client id/secret ride along as `MCP_OAUTH_CLIENT_ID`/`MCP_OAUTH_CLIENT_SECRET` —
+   plain env vars locally, secret-scope references in `deploy.py`'s `environment_vars`
+   (added conditionally, only when `MCP_SERVER_URL` is set).
+4. **A subtle load-order bug, caught only by testing the failure path.** The first "stop
+   the app, prove it fails" attempt didn't fail — `load_mcp_tools()` silently fell back to
+   spawning a local stdio subprocess and answered correctly regardless of the real app's
+   state. Root cause: called standalone (not through `build_graph()`), nothing had loaded
+   `.env` yet, so `os.environ.get("MCP_SERVER_URL")` read `None` and picked the stdio
+   branch — a false pass that would have looked like success right up until submission.
+   `build_graph()`'s own call order happens to load `config` (hence `.env`) before
+   `load_mcp_tools()` runs, so this never manifested through the normal entry point — but
+   `load_mcp_tools()` is a public function and shouldn't depend on caller ordering to
+   behave correctly. Fixed by having it `import config` itself (a cheap, idempotent
+   `load_dotenv()` side effect) before checking the env var.
+
+**Live verification, redone properly after each fix above:**
+- App created (`27100159-mcp-tools`) and deployed; `databricks apps list` shows it
+  `ACTIVE`/`SUCCEEDED`.
+- Full graph (`build_graph()` with `MCP_SERVER_URL` set) answered the combined
+  revenue+growth query correctly through the remote server — identical result to the
+  bundled-stdio path.
+- Stopped the app (`databricks apps stop`), confirmed genuinely down with a raw
+  unauthenticated `curl` (`503 Databricks App Not Available`) — *not* just the control-plane
+  status field, since that alone had earlier misled me — then reran both `load_mcp_tools()`
+  and the full `build_graph()` call: both failed with the real network error, confirming the
+  agent genuinely depends on the remote server rather than having some hidden fallback.
+  Restarted the app afterward and confirmed it recovered.
+- One more finding along the way, not a code bug: after `apps stop`, the control plane
+  reported `UNAVAILABLE` within seconds, but the data plane kept accepting requests for
+  roughly 3–4 minutes before actually returning `503` — a real teardown grace period worth
+  knowing about if this were ever load-bearing for a security boundary.
+
 ## Design decisions
 
 **Graph shape.** `agent/graph.py` wires `planner → supervisor → {rag_agent |
@@ -621,5 +688,47 @@ needing to know which one it's running in.
    (feeding into the Bonus A analysis question above: a future deploy that regresses on
    one of these specific traces should fail the evaluation gate before promotion).
 
-### Bonus C (not attempted)
-Not implemented this session — `deployment/mcp_app/app.py`/`app.yaml` are still stubs.
+### Bonus C — Standalone MCP Server
+1. **Gained:** the tool server can now be redeployed, restarted, and scaled independently
+   of the model — I proved this directly by stopping and restarting
+   `27100159-mcp-tools` without touching the serving endpoint at all. It also removes the
+   most fragile part of the container deployment (per `DEPLOYMENT_GUIDE.md`'s own framing):
+   the model container no longer needs to spawn and manage a stdio subprocess at
+   graph-build time, and the `_real_stderr_for_first_mcp_import()` workaround becomes
+   unnecessary for the MCP half of the problem (it's still needed for
+   `DatabricksVectorSearch`'s own transitive MCP import, per the docstring, but the
+   subprocess-launch codepath itself is no longer exercised). One tool service could also
+   now serve multiple agents. **Lost/gained new failure modes:** every tool call is now a
+   network hop instead of a local pipe, so latency goes up and a class of failure that
+   simply couldn't happen before now can — the app can be down, slow, or unreachable
+   independent of the model endpoint's own health, and callers need real timeout/retry
+   handling for it (the same class of problem `client/sdk.py` already solves for the model
+   endpoint, but nothing here reuses that — `load_mcp_tools()` has no retry logic at all).
+   Auth is a wholly new surface too: I hit this directly (§ above) — a PAT that
+   authenticates everywhere else in this project doesn't authenticate to the App at all,
+   requiring a dedicated service-principal OAuth flow that didn't exist before.
+2. Two layers: **network** and **identity**. Network — Databricks Apps can be restricted
+   with IP access lists / private networking at the workspace level so the App's ingress
+   isn't reachable from the open internet at all, only from within the workspace's network
+   boundary. Identity — even reachable, the App should only accept calls from a specific
+   principal: exactly what I built here. The service principal `cs4603-mcp-caller` was
+   deliberately created *only* for this purpose (not reused from anything else in the
+   project) and granted the minimum permission level that works (`CAN_USE`, not
+   `CAN_MANAGE`) via `apps update-permissions` — so a leaked `MCP_OAUTH_CLIENT_SECRET`
+   can call the tools but can't reconfigure or delete the app. In production I'd rotate
+   that secret regularly (the same way `MCP_OAUTH_CLIENT_SECRET`/`DATABRICKS_TOKEN` sit in
+   the `cs4603-deploy` secret scope rather than in plaintext env vars) and avoid granting
+   the underlying service principal any permissions beyond that one app.
+3. Bundling (Part 1) wins when the tool set is small, stable, and used by exactly one
+   agent — no network hop, no separate deployment to manage, no second auth surface to
+   secure, and (per `DEPLOYMENT_GUIDE.md`) it's what a single-container serving deploy
+   naturally supports without extra infrastructure. A standalone service (Bonus C) is
+   worth the extra moving parts once any of that stops being true: multiple agents sharing
+   one tool server, the tools needing to scale or redeploy on a different cadence than the
+   model (e.g. a new `calculate` bug fix shouldn't require re-registering and re-serving
+   the whole LangGraph model), or the tools needing their own monitoring/rate-limiting
+   independent of the model endpoint's. Given how small and stable `tools/mcp_server.py`
+   actually is here — five deterministic, dependency-free functions — Part 1's bundled
+   approach is arguably the *more* appropriate choice for this specific project; Bonus C
+   is the right call once a tool server needs to earn its keep as shared infrastructure,
+   which this one doesn't yet.

@@ -1,0 +1,6 @@
+# Databricks App config for the standalone MCP server (Bonus C).
+#
+# Databricks Apps injects the listen port to bind via $DATABRICKS_APP_PORT
+# (read by app.py) and proxies external HTTPS traffic to it.
+
+command: ["python", "deployment/mcp_app/app.py"]

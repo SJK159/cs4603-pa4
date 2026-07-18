@@ -1,6 +1,0 @@
-# Databricks App config for the standalone MCP server (Bonus C).
-#
-# TODO: point `command` at deployment/mcp_app/app.py so `databricks apps deploy`
-# runs it. Databricks Apps injects the listen port via $DATABRICKS_APP_PORT.
-#
-# command: ["python", "deployment/mcp_app/app.py"]

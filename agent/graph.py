@@ -66,15 +66,69 @@ def _run_async(coro):
             return executor.submit(asyncio.run, coro).result()
 
 
+def _mint_mcp_oauth_token() -> str:
+    """Mint an M2M OAuth access token to call the standalone MCP Databricks App.
+
+    Databricks Apps' ingress requires a Databricks OAuth token, not a plain
+    personal access token — confirmed empirically: the same user, with
+    CAN_MANAGE on the app, gets a 401 calling it with `DATABRICKS_TOKEN` (a
+    PAT) as the bearer, but succeeds with a Databricks-issued OAuth token.
+    `DATABRICKS_TOKEN` is the only credential the model-serving container
+    otherwise has, so the app needs its own OAuth-capable identity: a
+    service principal (`MCP_OAUTH_CLIENT_ID`/`MCP_OAUTH_CLIENT_SECRET`,
+    granted CAN_USE on the app) that this exchanges for a short-lived access
+    token via the standard OAuth client-credentials grant.
+    """
+    import httpx
+
+    from config import get_settings
+
+    settings = get_settings()
+    client_id = os.environ["MCP_OAUTH_CLIENT_ID"]
+    client_secret = os.environ["MCP_OAUTH_CLIENT_SECRET"]
+
+    response = httpx.post(
+        f"{settings['host']}/oidc/v1/token",
+        data={"grant_type": "client_credentials", "scope": "all-apis"},
+        auth=(client_id, client_secret),
+        timeout=30.0,
+    )
+    response.raise_for_status()
+    return response.json()["access_token"]
+
+
 def load_mcp_tools(server_path: str | None = None):
-    """Connect to the GIVEN MCP server over stdio and return its LangChain tools.
+    """Connect to the MCP server and return its LangChain tools.
 
     Loaded once at graph-build time (not per-invocation) per the deployment
     guide: stdio MCP is bundled inside the serving container, so tool
     invocation must stay synchronous and the subprocess shouldn't be
     relaunched on every call.
+
+    If `MCP_SERVER_URL` is set (Bonus C — the standalone Databricks App in
+    deployment/mcp_app/), connects over streamable HTTP instead of spawning
+    a stdio subprocess, decoupling the tool server from the model container.
+    Falls back to the Part 1 stdio subprocess behavior when it's unset.
     """
+    # Importing config runs its module-level load_dotenv() as a side effect,
+    # so MCP_SERVER_URL is populated even if this is called standalone,
+    # before build_graph()'s LLM/retriever setup would otherwise load it.
     from langchain_mcp_adapters.client import MultiServerMCPClient
+
+    import config as _config  # noqa: F401
+
+    mcp_url = os.environ.get("MCP_SERVER_URL")
+    if mcp_url:
+        client = MultiServerMCPClient(
+            {
+                "analyst": {
+                    "url": f"{mcp_url.rstrip('/')}/mcp",
+                    "transport": "streamable_http",
+                    "headers": {"Authorization": f"Bearer {_mint_mcp_oauth_token()}"},
+                }
+            }
+        )
+        return _run_async(client.get_tools())
 
     if server_path is None:
         server_path = os.path.join(

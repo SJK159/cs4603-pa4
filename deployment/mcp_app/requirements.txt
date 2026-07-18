@@ -1,0 +1,4 @@
+# Standalone Databricks App environment for the MCP tool server (Bonus C).
+# Deliberately minimal — this app only needs the MCP server SDK, not the
+# full agent/LangGraph/LangChain stack deploy.py's model container pins.
+mcp==1.28.1

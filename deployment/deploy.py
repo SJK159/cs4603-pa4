@@ -293,22 +293,37 @@ def create_or_update_endpoint(uc_name: str, version: str) -> str:
     settings = get_settings()
     w = WorkspaceClient()
 
+    environment_vars = {
+        # Secrets — never plaintext.
+        "DATABRICKS_HOST": f"{{{{secrets/{SECRET_SCOPE}/DATABRICKS_HOST}}}}",
+        "DATABRICKS_TOKEN": f"{{{{secrets/{SECRET_SCOPE}/DATABRICKS_TOKEN}}}}",
+        "DATABRICKS_MODEL": f"{{{{secrets/{SECRET_SCOPE}/DATABRICKS_MODEL}}}}",
+        # Not secrets — the retriever needs these to reach the index.
+        "VECTOR_SEARCH_ENDPOINT": settings["vs_endpoint"],
+        "VECTOR_SEARCH_INDEX": settings["vs_index"],
+        "EMBEDDINGS_ENDPOINT": settings["embeddings"],
+    }
+    # Bonus C — point the agent at the standalone MCP Databricks App instead
+    # of spawning the bundled stdio subprocess (agent/graph.py's
+    # load_mcp_tools() falls back to stdio when this is unset). The App's
+    # ingress requires an OAuth token, not DATABRICKS_TOKEN (a PAT) — see
+    # agent/graph.py::_mint_mcp_oauth_token() — so a service-principal
+    # client id/secret (granted CAN_USE on the app) must ride along too.
+    mcp_server_url = os.environ.get("MCP_SERVER_URL")
+    if mcp_server_url:
+        environment_vars["MCP_SERVER_URL"] = mcp_server_url
+        environment_vars["MCP_OAUTH_CLIENT_ID"] = f"{{{{secrets/{SECRET_SCOPE}/MCP_OAUTH_CLIENT_ID}}}}"
+        environment_vars["MCP_OAUTH_CLIENT_SECRET"] = (
+            f"{{{{secrets/{SECRET_SCOPE}/MCP_OAUTH_CLIENT_SECRET}}}}"
+        )
+
     served_entities = [
         ServedEntityInput(
             entity_name=uc_name,
             entity_version=version,
             workload_size="Small",
             scale_to_zero_enabled=True,
-            environment_vars={
-                # Secrets — never plaintext.
-                "DATABRICKS_HOST": f"{{{{secrets/{SECRET_SCOPE}/DATABRICKS_HOST}}}}",
-                "DATABRICKS_TOKEN": f"{{{{secrets/{SECRET_SCOPE}/DATABRICKS_TOKEN}}}}",
-                "DATABRICKS_MODEL": f"{{{{secrets/{SECRET_SCOPE}/DATABRICKS_MODEL}}}}",
-                # Not secrets — the retriever needs these to reach the index.
-                "VECTOR_SEARCH_ENDPOINT": settings["vs_endpoint"],
-                "VECTOR_SEARCH_INDEX": settings["vs_index"],
-                "EMBEDDINGS_ENDPOINT": settings["embeddings"],
-            },
+            environment_vars=environment_vars,
         )
     ]
 
