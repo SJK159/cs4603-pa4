@@ -208,12 +208,69 @@ on:
   state and URL once `READY` (`wait_for_ready()`), so those show up directly in the
   job's logs without any extra `echo` step.
 
-**Verification.** I ran the exact `lint-and-test` commands locally (`uv sync --extra
-dev`, `ruff check agent/ client/`, `pytest -q`) — both pass, confirming a push would go
-green — and validated the workflow YAML parses correctly (`yaml.safe_load`). I did not
-push to trigger a live `deploy` run as part of this exercise; that requires
-`DATABRICKS_HOST`/`DATABRICKS_TOKEN` configured as repo secrets first (Settings →
-Secrets and variables → Actions).
+**Verification.** Beyond the local dry-run (`uv sync --extra dev`, `ruff check agent/
+client/`, `pytest -q`, plus `yaml.safe_load` on the workflow file), I configured the
+real repo secrets/variables (`gh secret set` / `gh variable set` for
+`DATABRICKS_HOST`/`DATABRICKS_TOKEN` and the non-sensitive config) and triggered a real
+`workflow_dispatch` run on `main`:
+[run 29639702020](https://github.com/SJK159/cs4603-pa4/actions/runs/29639702020).
+Both jobs went green (`lint-and-test` in 15s, `deploy` in 49s), and `deploy` genuinely
+registered a new Unity Catalog version (5 → 6) and updated the live serving endpoint —
+confirmed `READY` and re-queried successfully through `DocumentAnalystClient`
+immediately after. One snag along the way, unrelated to the pipeline's own logic:
+GitHub rejects pushes that touch `.github/workflows/*.yml` unless the pushing
+credential has the `workflow` OAuth scope — the initial push was rejected with
+`refusing to allow an OAuth App to create or update workflow ... without workflow
+scope` until I ran `gh auth refresh -s workflow` and `gh auth setup-git` to get a
+correctly-scoped token wired up as git's credential helper.
+
+## Databricks Agents SDK Deployment (Bonus B)
+
+`deployment/deploy_agents.py` deploys the same Document Analyst using `databricks.agents.deploy()`
+instead of the manual `WorkspaceClient` + `EndpointCoreConfigInput` calls in `deploy.py`.
+
+**The one real wrinkle: `agents.deploy()` rejects Task 2.1's model outright.**
+`agent_model.py` registers the compiled LangGraph object directly
+(`mlflow.models.set_model(graph)`), whose output is the full `AnalystState` — `messages`,
+`plan`, `current_step_index`, `step_results`, `next_agent`, `final_answer`. The first live
+attempt at Bonus B logged and registered that exact model (version 7), then failed inside
+`agents.deploy()`'s pre-flight compatibility check:
+
+```
+ValueError: The model's schema is not compatible with Agent Framework. The output
+schema must be either ChatCompletionResponse or StringResponse. Output schema:
+['messages': ..., 'plan': Array(string) (required), 'current_step_index': long
+(required), 'step_results': Array(string) (required), 'next_agent': string
+(required), 'final_answer': string (required)]
+```
+
+Reading `databricks.agents.utils.mlflow_utils._check_model_is_rag_compatible_legacy_signatures`
+confirmed this isn't a bug to route around — Agent Framework enforces a strict output
+contract (`ChatCompletionResponse`, `StringResponse`, or a couple of specific legacy
+shapes) with no override flag, and our richer state schema doesn't subset any of them.
+**Fix:** `deployment/agent_model_agents.py` wraps the *same, unmodified*
+`agent.graph.build_graph()` in an `mlflow.pyfunc.ChatModel` — `load_context()` builds the
+graph once (same one-time-load pattern Task 1.5 uses for MCP tools), and `predict()`
+translates `ChatMessage` list in to `ChatCompletionResponse` out, extracting
+`result["final_answer"]` from the graph's own invoke. `deploy_agents.py` then logs *that*
+wrapper via `mlflow.pyfunc.log_model()` instead of `mlflow.langchain.log_model()`, still
+reusing `deploy.py`'s pinned `PIP_REQUIREMENTS` and `code_paths` unchanged. No change to
+Part 2's `agent_model.py`, `deploy.py`, or the graph itself was needed — the fix is
+entirely a new adapter file plus a swapped logging call.
+
+**Live result.** Retrying with the wrapper succeeded: registered version 8, provisioned a
+*new* endpoint (`27100159-document-analyst-agents`, distinct from Part 2's manually-managed
+one) plus an auto-generated Review App, reached `READY` in ~8 minutes (`agents.deploy()`
+itself returns immediately — "can take up to 15 minutes" — so I polled
+`WorkspaceClient().serving_endpoints.get()` separately until `READY`, since unlike
+`deploy.py`'s `wait_for_ready()`, `agents.deploy()` doesn't block for you). Queried via the
+OpenAI SDK afterward: the first call back returned a noticeably different answer (¥1,137
+billion, source p.3) than the Part 2 endpoint's consistent ¥1,107 billion/p.1 — two
+immediate follow-up calls both matched the expected ¥1,107 billion/p.1 exactly, so this
+reads as first-request sampling variance on a just-warmed container (the Databricks LLM
+endpoint is called with `temperature=0`, but a freshly-serving container's very first
+inference isn't guaranteed to be bit-identical to steady-state calls) rather than a defect
+in the wrapper.
 
 ## Design decisions
 
@@ -532,5 +589,37 @@ needing to know which one it's running in.
    the new version (visible in the UC model registry) without ever making it the one
    the endpoint actually serves.
 
-### Bonus B / C (not attempted this session)
-TODO
+### Bonus B — `databricks-agents` SDK
+1. The manual approach (`deploy.py`) gives full control at the cost of writing every
+   step yourself: I chose the exact registered-model output shape (the raw `AnalystState`
+   dict via `mlflow.models.set_model(graph)`), the exact endpoint config
+   (`workload_size`, `scale_to_zero_enabled`, which env vars are secrets vs. plaintext),
+   and I own the READY-polling loop (`wait_for_ready()`), so I can see precisely what's
+   happening at each step and log/handle failures however I want. `agents.deploy()`
+   trades that control for one call that provisions the endpoint *and* a Review App for
+   human feedback together — but that convenience comes with an opinionated contract I
+   don't get to negotiate: it silently requires the model's output to be
+   `ChatCompletionResponse`/`StringResponse`-shaped (see the `ValueError` above), which
+   meant giving up the rich, auditable `AnalystState` output at the served boundary — the
+   internal graph state is unchanged, but external callers of the Agents-SDK endpoint
+   only ever see a plain chat completion, not `plan`/`step_results`/`current_step_index`.
+   I also lose visibility into *when* the endpoint is actually ready (`agents.deploy()`
+   returns immediately with "can take up to 15 minutes"; I had to write my own separate
+   poll loop against `WorkspaceClient` to know when it was safe to query), and I gain,
+   for free, the Review App — something `deploy.py`'s manual path doesn't offer at all
+   without building it myself.
+2. The Review App gives named reviewers a chat UI against the live endpoint where they
+   can rate individual responses (thumbs up/down, free-text feedback) tied back to the
+   specific trace that produced them. A concrete feedback loop: have a few people run the
+   three Task 1.7-style queries (and edge cases — ambiguous questions, facts not in the
+   report) through the Review App over a week; export the logged feedback via
+   `mlflow.search_traces`/the feedback API; use the thumbs-down traces as a diagnostic
+   set — for each one, look at whether the failure was in retrieval (wrong or missing
+   chunk), routing (Task 1.3's misroute failure mode), or synthesis (hallucinated a
+   number instead of citing "Not found in documents.") — then turn the clearest recurring
+   pattern into either a prompt fix (`agent/prompts.py`) or a held-out eval case
+   (feeding into the Bonus A analysis question above: a future deploy that regresses on
+   one of these specific traces should fail the evaluation gate before promotion).
+
+### Bonus C (not attempted)
+Not implemented this session — `deployment/mcp_app/app.py`/`app.yaml` are still stubs.
