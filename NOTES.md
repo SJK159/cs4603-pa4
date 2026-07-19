@@ -1,7 +1,7 @@
 # CS4603 PA4 — Document Analyst — Implementation Notes
 
 Setup, run, and deployment instructions, plus design decisions. The graded
-analysis-question answers live in [`ANSWERS.md`](ANSWERS.md).
+analysis-question answers live in [`Analysis.md`](Analysis.md).
 
 ## Setup
 
@@ -343,7 +343,7 @@ once `current_step_index >= len(plan)`. I chose a flat per-step supervisor
 loop over either (a) one monolithic ReAct agent with all tools bound, or (b)
 a plan-and-execute variant that runs the whole plan in one pass without
 returning to a router. (a) is discussed in the Task 1.3 analysis in
-`ANSWERS.md` — it trades away the auditable plan and per-stage prompt
+`Analysis.md` — it trades away the auditable plan and per-stage prompt
 specialization this architecture leans on. (b) would save the extra
 supervisor LLM call per step, but loses the single choke point where routing
 decisions and step completion are both visible in the state — every step
@@ -355,8 +355,9 @@ step-by-step trace possible.
 `messages` as an `add_messages`-reduced channel; every other field
 (`plan`, `current_step_index`, `step_results`, `next_agent`, `final_answer`)
 is plain scratch space the nodes overwrite directly. This follows the
-"messages in, messages out" rule: because Databricks Model Serving reads the
-deployed endpoint's response off `messages[-1]`, `synthesizer` writes the
+"messages in, messages out" rule from `DEPLOYMENT_GUIDE.md` §5: because
+Databricks Model Serving reads the deployed endpoint's response off
+`messages[-1]`, `synthesizer` writes the
 answer to *both* `final_answer` (for local/notebook use) and appends an
 `AIMessage` to `messages` (for the deployed endpoint) — dropping either one
 breaks one of the two call paths silently rather than loudly.
@@ -368,9 +369,9 @@ since the same managed index is reachable with just `DATABRICKS_HOST`/
 `DATABRICKS_TOKEN`, `rag_agent.py`'s retriever code is *identical* between
 `pa4.ipynb` (Task 1.7) and the serving container (Task 2.1) — there's no
 separate "local embedding path" to keep in sync or forget to port over at
-deploy time, which is exactly the class of bug (`ModuleNotFoundError`,
-missing env vars) that is the common deployment failure mode this design
-sidesteps.
+deploy time, which is exactly the class of bug `DEPLOYMENT_GUIDE.md` calls
+out repeatedly (`ModuleNotFoundError`, missing env vars) as the common
+deployment failure mode this design sidesteps.
 
 **MCP tools loaded once, invoked synchronously.** `load_mcp_tools()` is
 called once inside `build_graph()`, not per-invocation, and `make_mcp_node`
@@ -391,7 +392,7 @@ acknowledge the gap rather than fabricate a number. This is a pragmatic
 choice, not a robust one — it works because both ends of the contract
 (`rag_agent` and the synthesizer's prompt) agree on the exact string, but
 nothing enforces that agreement structurally (a typo in either place would
-silently break gap-detection). The Task 1.2 analysis in `ANSWERS.md`
+silently break gap-detection). The Task 1.2 analysis in `Analysis.md`
 discusses the natural extension: promoting per-step success/failure into a
 structured field the supervisor can act on mid-run, rather than a string
 convention the synthesizer merely happens to recognize.

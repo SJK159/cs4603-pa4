@@ -4,7 +4,7 @@ Talks to the raw MLflow `/invocations` contract (messages in, state dict
 out) rather than the OpenAI-compatible `/chat/completions` gateway: the
 `AnalystState` carries extra fields beyond `messages` (`plan`,
 `step_results`, `final_answer`, ...), which the gateway does not recognize
-as a pure chat completion (see ANSWERS.md for the
+as a pure chat completion (see DEPLOYMENT_GUIDE.md / Analysis.md for the
 `resp[0].final_answer` vs. `resp.choices[0].message.content` discussion).
 Hitting `/invocations` directly and parsing the state ourselves sidesteps
 that gateway-shape mismatch entirely.

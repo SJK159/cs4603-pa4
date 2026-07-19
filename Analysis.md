@@ -282,8 +282,9 @@ instructions, and design decisions live in [`NOTES.md`](NOTES.md).
 1. **Gained:** the tool server can now be redeployed, restarted, and scaled independently
    of the model — I proved this directly by stopping and restarting
    `27100159-mcp-tools` without touching the serving endpoint at all. It also removes the
-   most fragile part of the container deployment: the model container no longer needs to
-   spawn and manage a stdio subprocess at graph-build time, and the
+   most fragile part of the container deployment (per `DEPLOYMENT_GUIDE.md`'s own framing):
+   the model container no longer needs to spawn and manage a stdio subprocess at
+   graph-build time, and the
    `_real_stderr_for_first_mcp_import()` workaround becomes unnecessary for the MCP half
    of the problem (it's still needed for `DatabricksVectorSearch`'s own transitive MCP
    import, per the docstring, but the subprocess-launch codepath itself is no longer
@@ -311,8 +312,8 @@ instructions, and design decisions live in [`NOTES.md`](NOTES.md).
    the underlying service principal any permissions beyond that one app.
 3. Bundling (Part 1) wins when the tool set is small, stable, and used by exactly one
    agent — no network hop, no separate deployment to manage, no second auth surface to
-   secure, and it's what a single-container serving deploy naturally supports without
-   extra infrastructure. A standalone service (Bonus C) is worth the extra moving parts
+   secure, and (per `DEPLOYMENT_GUIDE.md`) it's what a single-container serving deploy
+   naturally supports without extra infrastructure. A standalone service (Bonus C) is worth the extra moving parts
    once any of that stops being true: multiple agents sharing one tool server, the tools
    needing to scale or redeploy on a different cadence than the model (e.g. a new
    `calculate` bug fix shouldn't require re-registering and re-serving the whole
